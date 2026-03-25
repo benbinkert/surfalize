@@ -29,12 +29,6 @@ class AutocorrelationFunction(CachedInstance):
         self.data = self.calculate_autocorrelation()
         self.center = np.array(self.data.shape) // 2
 
-    def calculate_autocorrelation(self):
-        data = self._surface.center().data
-        data_fft = np.fft.fft2(data)
-        # Compute ACF from FFT and normalize
-        acf_data = np.fft.fftshift(np.fft.ifft2(data_fft * np.conj(data_fft)).real / data.size)
-        return acf_data
 
     @cache
     def _calculate_decay_lengths(self, s):

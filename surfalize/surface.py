@@ -21,6 +21,7 @@ from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 import scipy.ndimage as ndimage
 from sklearn.cluster import KMeans
+from scipy import ndimage
 
 # Custom imports
 from .file import FileHandler
@@ -486,88 +487,130 @@ class Surface(CachedInstance):
         float
         """
         return np.nanstd(self.data)
-        
+
     def get_horizontal_profile(self, y, average=1, average_step=None):
-        """
-        Extracts a horizontal profile from the surface with optional averaging over parallel profiles.
-        Profiles on the edge might be averaged over fewer profiles.
-
-        Parameters
-        ----------
-        y : float
-            vertical (height) value in µm from where the profile is extracted. The value is rounded to the closest data
-            point.
-        average : int
-            number of profiles over which to average. Defaults to 1. Profiles will be extracted above and below the
-            position designated by y.
-        average_step : float, default None
-            distance in µm between parallel profiles used for averaging. The value is rounded to the closest integer
-            multiple of the pixel resolution. If the value is None, a distance of 1 px will be assumed.
-
-        Returns
-        -------
-        profile : surfalize.Profile
-        """
         if y > self.height_um:
             raise ValueError("y must not exceed height of surface.")
-        
+
         if average_step is None:
             average_step_px = 1
         else:
-            average_step_px = int(average_step / self.step_y)
+            average_step_px = max(1, int(round(average_step / self.step_y)))
 
-        # vertical index of profile
-        idx = int(y / self.height_um * self.size.y)
-        # first index from which a profile is taken for averaging
+        # y in µm ist im surface.show()-Koordinatensystem (y=0 unten)
+        # im Array ist Zeile 0 aber oben -> Spiegeln
+        idx = int(round((1 - y / self.height_um) * (self.size.y - 1)))
+        idx = max(0, min(idx, self.size.y - 1))
+
         idx_min = idx - int(average / 2) * average_step_px
         idx_min = 0 if idx_min < 0 else idx_min
-        # last index from which a profile is taken for averaging
+
         idx_max = idx + int(average / 2) * average_step_px
-        idx_max = self.size.y if idx_max > self.size.y else idx_max
+        idx_max = self.size.y - 1 if idx_max > self.size.y - 1 else idx_max
+
         data = self.data[idx_min:idx_max + 1:average_step_px].mean(axis=0)
-        return Profile(data, self.step_x, self.width_um)
-    
+
+        axis_data = np.linspace(0, self.width_um, data.size)
+
+        return Profile(
+            data,
+            self.step_x,
+            self.width_um,
+            axis_data=axis_data,
+            axis_label='x [µm]',
+            title=f'Horizontalprofil bei y = {y:.1f} µm'
+        )
+
     def get_vertical_profile(self, x, average=1, average_step=None):
         """
-         Extracts a vertical profile from the surface with optional averaging over parallel profiles.
-         Profiles on the edge might be averaged over fewer profiles.
-
-         Parameters
-         ----------
-         x : float
-             laterial (width) value in µm from where the profile is extracted. The value is rounded to the closest data
-             point.
-         average : int
-             number of profiles over which to average. Defaults to 1. Profiles will be extracted above and below the
-             position designated by x.
-         average_step : float, default None
-             distance in µm between parallel profiles used for averaging. The value is rounded to the closest integer
-             multiple of the pixel resolution. If the value is None, a distance of 1 px will be assumed.
-
-         Returns
-         -------
-         profile : surfalize.Profile
-         """
+        Extracts a vertical profile from the surface with optional averaging over parallel profiles.
+        """
         if x > self.width_um:
-            raise ValueError("x must not exceed height of surface.")
-        
+            raise ValueError("x must not exceed width of surface.")
+
         if average_step is None:
             average_step_px = 1
         else:
-            average_step_px = int(average_step / self.step_x)
+            average_step_px = max(1, int(round(average_step / self.step_x)))
 
-        # vertical index of profile
-        idx = int(x / self.width_um * self.size.x)
-        # first index from which a profile is taken for averaging
+        # Spaltenindex sauber berechnen
+        idx = int(round(x / self.step_x))
+        idx = max(0, min(idx, self.size.x - 1))
+
         idx_min = idx - int(average / 2) * average_step_px
         idx_min = 0 if idx_min < 0 else idx_min
-        # last index from which a profile is taken for averaging
+
         idx_max = idx + int(average / 2) * average_step_px
-        idx_max = self.size.x if idx_max > self.size.x else idx_max
+        idx_max = self.size.x - 1 if idx_max > self.size.x - 1 else idx_max
+
         data = self.data[:, idx_min:idx_max + 1:average_step_px].mean(axis=1)
-        return Profile(data, self.step_y, self.height_um)
+
+        # Damit x=0 im Profil dem kleinsten y entspricht:
+        # surface.show() zeigt optisch y=0 unten, Datenzeile 0 ist aber oben
+        data = data[::-1]
+
+        axis_data = np.linspace(0, self.height_um, data.size)
+
+        return Profile(
+            data,
+            self.step_y,
+            self.height_um,
+            axis_data=axis_data,
+            axis_label='y [µm]',
+            title=f'Vertikalprofil bei x = {x:.1f} µm'
+        )
 
     #TODO: implement averaging
+    def get_oblique_profile_fixed(self, x0, y0, x1, y1):
+        """
+        Extracts an oblique profile from the surface with real axis.
+        Start always at the smaller point (first smaller x, then smaller y).
+        """
+
+        x0, y0, x1, y1 = map(float, (x0, y0, x1, y1))
+
+        # immer vom kleineren Punkt zum größeren
+        if (x1 < x0) or (x1 == x0 and y1 < y0):
+            x0, y0, x1, y1 = x1, y1, x0, y0
+
+        # µm -> Pixelindex
+        x0px = x0 / self.width_um * (self.size.x - 1)
+        x1px = x1 / self.width_um * (self.size.x - 1)
+
+        # y MUSS gespiegelt werden (wegen origin='upper' in show/plot_2d)
+        y0px = (1 - y0 / self.height_um) * (self.size.y - 1)
+        y1px = (1 - y1 / self.height_um) * (self.size.y - 1)
+
+        if not (0 <= x0px <= self.size.x - 1 and
+                0 <= y0px <= self.size.y - 1 and
+                0 <= x1px <= self.size.x - 1 and
+                0 <= y1px <= self.size.y - 1):
+            raise ValueError("Start- and endpoint coordinates must lie within the surface.")
+
+        dx = x1px - x0px
+        dy = y1px - y0px
+
+        size = max(2, int(np.hypot(dx, dy)) + 1)
+
+        xp = np.linspace(x0px, x1px, size)
+        yp = np.linspace(y0px, y1px, size)
+
+        data = ndimage.map_coordinates(self.data, [yp, xp], order=1, mode='nearest')
+
+        length_um = np.hypot(x1 - x0, y1 - y0)
+        step = length_um / (size - 1)
+
+        axis_data = np.linspace(0, length_um, data.size)
+
+        return Profile(
+            data,
+            step,
+            length_um,
+            axis_data=axis_data,
+            axis_label='Profilweg [µm]',
+            title=f'Schrägprofil von ({x0:.1f}, {y0:.1f}) nach ({x1:.1f}, {y1:.1f}) µm'
+        )
+
     def get_oblique_profile(self, x0, y0, x1, y1):
         """
          Extracts an oblique profile from the surface.
@@ -793,6 +836,23 @@ class Surface(CachedInstance):
             self._set_data(data=data_interpolated)
             return self
         return Surface(data_interpolated, self.step_x, self.step_y)
+
+    def fill_nonmeasured_rowwise_linear(surface, inplace=False):
+        z = np.array(surface.data, dtype=float, copy=True)
+
+        for i in range(z.shape[0]):
+            row = z[i, :]
+            mask = np.isfinite(row)
+            if mask.any() and not mask.all():
+                x = np.arange(len(row))
+                row[~mask] = np.interp(x[~mask], x[mask], row[mask])
+                z[i, :] = row
+
+        if inplace:
+            surface._set_data(data=z)
+            return surface
+
+        return Surface(z, surface.step_x, surface.step_y)
 
     @batch_method('operation', fixed={'inplace': True, 'return_trend': False})
     def level(self, return_trend=False, inplace=False):
@@ -2384,7 +2444,7 @@ class Surface(CachedInstance):
             image.save(save_to)
         return image
 
-    def show(self, cmap='jet', maskcolor='black', layer='Topography', ax=None):
+    def show(self,bool=True, cmap='jet', maskcolor='black', layer='Topography', ax=None):
         """
         Shows a 2D-plot of the surface using matplotlib.
 
@@ -2405,4 +2465,4 @@ class Surface(CachedInstance):
         None.
         """
         self.plot_2d(cmap=cmap, maskcolor=maskcolor, layer=layer, ax=ax)
-        plt.show()
+        plt.show(block = bool)
